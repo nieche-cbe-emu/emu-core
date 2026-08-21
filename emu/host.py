@@ -58,18 +58,6 @@ class Session:
         self.latched |= mask & ~self.keys
         self.keys = mask
 
-    SOFT_POS = {"left": (0.08, 0.96), "right": (0.93, 0.96)}
-
-    def soft_key(self, side, pressed):
-
-        if not pressed or side not in self.SOFT_POS:
-            return
-        fx, fy = self.SOFT_POS[side]
-        w, h = self.size
-        x, y = int(w * fx), int(h * fy)
-        self.set_touch(x, y, "down")
-        self.set_touch(x, y, "up")
-
     def set_touch(self, x, y, state):
         e = (int(x), int(y), state)
 
