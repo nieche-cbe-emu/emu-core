@@ -27,6 +27,8 @@ class Session:
         self.prev_keys = 0
         self.rep_next = {}
         self.touch = None
+
+        self.touch_queue = []
         self.frame_no = 0
         self.nlog = 0
         self.alive = True
@@ -56,8 +58,25 @@ class Session:
         self.latched |= mask & ~self.keys
         self.keys = mask
 
+    SOFT_POS = {"left": (0.08, 0.96), "right": (0.93, 0.96)}
+
+    def soft_key(self, side, pressed):
+
+        if not pressed or side not in self.SOFT_POS:
+            return
+        fx, fy = self.SOFT_POS[side]
+        w, h = self.size
+        x, y = int(w * fx), int(h * fy)
+        self.set_touch(x, y, "down")
+        self.set_touch(x, y, "up")
+
     def set_touch(self, x, y, state):
-        self.touch = (int(x), int(y), state)
+        e = (int(x), int(y), state)
+
+        if state == "move" and self.touch_queue and self.touch_queue[-1][2] == "move":
+            self.touch_queue[-1] = e
+        elif len(self.touch_queue) < 64:
+            self.touch_queue.append(e)
 
     def _apply_input(self, now):
         rt = self.rt
@@ -70,6 +89,9 @@ class Session:
         rt.keys_down |= self._autorepeat(bits, now)
         self.prev_keys = bits
 
+        if self.touch_queue:
+
+            self.touch = self.touch_queue.pop(0)
         if self.touch:
             x, y, st = self.touch
             rt.pointer = (x, y)
