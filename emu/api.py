@@ -1527,6 +1527,40 @@ def df_degree(mc, rt):
     dx, dy = _s32(mc.arg(0)), _s32(mc.arg(1))
     mc.ret(int(round(math.degrees(math.atan2(dy, dx)))) % 360)
 
+@impl(UTIL, "CdRectPoint")
+@impl(GAME, "CdRectPoint")
+def cd_rect_point(mc, rt):
+
+    x1, y1, x2, y2 = (_s32(mc.arg(i)) for i in range(4))
+    px, py = _s32(mc.arg(4)), _s32(mc.arg(5))
+    mc.ret(1 if (x1 <= px <= x2 and y1 <= py <= y2) else 0)
+
+@impl(UTIL, "CdRect")
+@impl(GAME, "CdRect")
+def cd_rect(mc, rt):
+
+    a = [_s32(mc.arg(i)) for i in range(4)]
+    b = [_s32(mc.arg(i)) for i in range(4, 8)]
+    hit = a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+    mc.ret(1 if hit else 0)
+
+@impl(UTIL, "CdRectPoint2")
+@impl(GAME, "CdRectPoint2")
+def cd_rect_point2(mc, rt):
+
+    x, y, w, h = (_s32(mc.arg(i)) for i in range(4))
+    px, py = _s32(mc.arg(4)), _s32(mc.arg(5))
+    mc.ret(1 if (x <= px <= x + w and y <= py <= y + h) else 0)
+
+@impl(UTIL, "CdRect2")
+@impl(GAME, "CdRect2")
+def cd_rect2(mc, rt):
+
+    ax, ay, aw, ah = (_s32(mc.arg(i)) for i in range(4))
+    bx, by, bw, bh = (_s32(mc.arg(i)) for i in range(4, 8))
+    hit = ax <= bx + bw and bx <= ax + aw and ay <= by + bh and by <= ay + ah
+    mc.ret(1 if hit else 0)
+
 @impl(UTIL, "Sqrt")
 @impl(GAME, "Sqrt")
 def df_sqrt(mc, rt):
