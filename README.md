@@ -1,51 +1,44 @@
-# emu-core
+# emu-core-py
 
-尼彩（Nieche）CoolBar `.cbe` 模块的模拟核心。靠 Unicorn 跑 ARMv5TE 指令，
-宿主 API 用陷阱表在宿主侧实现。
+尼彩（Nieche）CoolBar `.cbe` 模拟核心的 **Python 参照实现**。
 
-**两套实现并存**，这是刻意的：
+**这不是发布产物。** 三端外壳跑的是
+[emu-core-rs](https://github.com/nieche-cbe-emu/emu-core-rs)。
+这一份的用途只有两个：**开发**和**验证**。
 
 ```
-emu/       Python 参照实现：机器、运行时、约 250 个宿主 API、显示、音频、字库
+emu/       机器、运行时、约 250 个宿主 API、显示、音频、字库
 cbelib/    .cbe 容器解析与资源解码（图片、脚本、多包）
-rust/      Rust 实现：分发用的运行时，另出 C ABI（libnieche）与 engine 进程
 ```
 
-Python 那份是**判据**。Rust 那份必须逐帧对上它——画面、宿主调用序列、
-调用次数三样都要一致。任何行为分歧一律以 Python 为准，除非能证明 Python 错了。
-两边都留着，是因为这样任何一边的改动都会被另一边比对出来。
+## 为什么留着它
 
-## Python 侧
+因为它是**判据**。新行为先在这边跑通——Python 改起来快、出错看得清、
+能随时插进去打印——确认对了之后再移植到 Rust，然后逐帧比对：
+画面、宿主调用序列、调用次数三样都要一致。任何分歧一律以这边为准，
+除非能证明这边错了。
+
+两边都留着，是为了让任何一边的改动都会被另一边比对出来。
+只留 Rust 的话，就再也没有独立的第二意见了。
+
+差分工具在 [emu-tools](https://github.com/nieche-cbe-emu/emu-tools)：
+
+```
+tools/rsdiff.sh      画面 + 宿主调用序列 + 调用次数
+tools/ffidiff.sh     C ABI + 输入整形，对这边的 Session
+tools/enginediff.sh  两个 engine 进程的协议输出
+tools/ci.sh          以上全部，加构建与单元测试
+```
+
+## 用法
 
 ```
 pip install unicorn capstone
 python3 -c "from emu.host import Session; s=Session('x.cbe').boot(); s.step()"
 ```
 
-`emu/host.py` 里的 `Session` 是**冻结接口**，三端外壳只准用这些：
-`boot / stop / step / set_keys / set_touch / soft_key / take_events / size`。
-按键的边沿判定、短按锁存、触摸排队、长按连发、软键两段式都在这一层，
-外壳不要自己再实现一遍。
-
-## Rust 侧
-
-```
-cd rust && cargo build --release
-```
-
-产物三个：`libnieche`（C ABI，见 `emuffi/nieche.h`）、`engine`（无界面引擎进程，
-协议和 `emu-tools` 里的 `tools/engine.py` 逐字节一致）、以及若干比对用的二进制。
-
-`emu/native.py` 用 ctypes 接 `libnieche`，对外是和 `Session` 一样的接口，
-所以 Windows 和安卓的 Python 外壳换核心不用改代码。
-
-## 支持情况
-
-29 个模块语料上：全部能引导；Python 与 Rust 的 60 帧逐帧差分 29/29 完全一致，
-300 帧 28/29（战争机器在第 260 帧分叉，未解）。
-
-两代入口 ABI 都接住了（新 SDK 的 screen 模型，与老 SDK 的数字系统调用），
-容器的两种头（magic 4 / 8）、多包、大端(BE-32)模块、屏幕尺寸认领都实现了。
+`emu/host.py` 里的 `Session` 和 Rust 侧的 `session.rs` 是同一份契约，
+逐条对齐——差分能成立就靠这个。
 
 ## 说明
 
