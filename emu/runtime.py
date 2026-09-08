@@ -1,5 +1,6 @@
 
 import collections
+import os
 from .machine import Machine
 from .hostabi import vm_printf
 from . import vmspec
@@ -58,12 +59,15 @@ class Runtime:
 
         self.host = m.data.alloc(0x10, "VmSysCallRegParam")
         m.w32(self.host + 0x08, self.sys_tbl)
+
         m.w32(self.host + 0x0c, m.new_trap("gm_TRACE", self._vm_log))
         self.fb = Framebuffer(m, self.screen_w, self.screen_h)
         self.images = ImageStore(m)
         self.frame_hook = None
         self.vfs = Vfs(fsroot or paths.fs_dir(mod.name), fsbase)
         self.trace_fs = trace_fs
+        self.finds = {}
+        self.next_find = 1
         self.screens = []
         self.pending = []
         self._installed = {}
@@ -97,9 +101,30 @@ class Runtime:
             mc.ret(0)
         return initer
 
+    OLD_GAMEMGR_SYSOFF = 0x090
+    OLD_GAMEMGR_SHIFT = 0x1c
+
+    def _old_game_manager(self):
+
+        so = self.OLD_GAMEMGR_SYSOFF
+        if so in self.managers:
+            return self.managers[so]
+        base = self.get_manager(0x084)
+        tag = vmspec.SYS[0x084][1]
+        size = (vmspec.SIZE.get(tag, 0x400) or 0x400) + 0x100
+        sh = self.OLD_GAMEMGR_SHIFT
+        addr = self.mach.data.alloc(size + sh, "GameManagerOld@old")
+        for off in range(0, size, 4):
+            self.mach.w32(addr + sh + off, self.mach.r32(base + off))
+        self.managers[so] = addr
+        return addr
+
     def get_manager(self, sysoff):
         if sysoff in self.managers:
             return self.managers[sysoff]
+        if (sysoff == self.OLD_GAMEMGR_SYSOFF
+                and getattr(self, "style", None) == self.ENTRY_OLD):
+            return self._old_game_manager()
         m = self.mach
         getter, tag = vmspec.SYS[sysoff]
 
@@ -111,6 +136,9 @@ class Runtime:
             ent = table.get(off)
             nm = ent[0] if ent else f"{(tag or 'mgr')[:-3]}+{off:#x}"
             const = self.NATIVE_CONSTS.get(nm)
+
+            if os.environ.get("NO_NATIVE"):
+                const = None
             if const is not None:
 
                 m.w32(addr + off, m.native_const(nm, const(self)))
@@ -179,10 +207,23 @@ class Runtime:
             n += 1
         return n
 
+    def live_screens(self):
+
+        out = []
+        for ent in self.screens:
+            scr = ent[0]
+            if scr and any(self.mach.r32(scr + 4 * k) for k in range(7)):
+                out.append(ent)
+        return out
+
     def call_screen(self, scr, slot, *args):
         fn = self.mach.r32(scr + 4 * slot)
         if not fn:
             return None
+        if os.environ.get("REGDBG"):
+            import sys as _s
+            r = ",".join(hex(self.mach.reg(i)) for i in range(13))
+            print(f"REG slot={slot} fn={fn:#x} args={list(args)} r0-12={r}", file=_s.stderr)
         return self.mach.call(fn, args)
 
     def start_timer(self, ms, cb, param):
@@ -202,7 +243,20 @@ class Runtime:
             self.timers.pop(tid, None)
             self.defer(cb, (param,), f"timer#{tid}")
 
-    def frame(self, event=0, data=0):
+    NO_EVENT = 0xFF
+
+    def frame(self, event=None, data=0):
+        if event is None:
+            event = self.NO_EVENT
+        if self.style == self.ENTRY_OLD and not self.live_screens():
+
+            try:
+                self.mach.call(self.mod_cb0)
+            except Exception:
+                pass
+            self.pump()
+            self.present()
+            return
 
         self.tick += self.frame_ms
         self.audio.tick()
@@ -266,7 +320,24 @@ class Runtime:
     def lcd_image(self):
         return self.fb.img
 
+    ADOPT_BEFORE_FRAME = 4
+    ADOPT_RANGE = (80, 320, 80, 480)
+
+    def maybe_adopt_screen(self, w, h):
+
+        lo_w, hi_w, lo_h, hi_h = self.ADOPT_RANGE
+        if (self.fb.frames >= self.ADOPT_BEFORE_FRAME
+                or (w, h) == (self.screen_w, self.screen_h)
+                or not (lo_w <= w <= hi_w and lo_h <= h <= hi_h)
+                or w * h * 2 > self.fb.bytes):
+            return
+        self.screen_w, self.screen_h = w, h
+        self.fb.resize(w, h)
+        self.logs.append(f"按模块的清屏认领屏幕尺寸：{w}x{h}")
+
     def fill_rect(self, x, y, w, h, color):
+        if x <= 0 and y <= 0:
+            self.maybe_adopt_screen(w, h)
 
         if x <= 0 and y <= 0 and w >= self.screen_w and h >= self.screen_h:
             self.text_layer.clear()
@@ -334,18 +405,96 @@ class Runtime:
 
         sid = mc.arg(0)
         self.old_syscalls[sid] += 1
+        if not hasattr(self, "_old_objs"):
+            self._old_objs = {}
         if sid == self.OLD_REGISTER_APP:
             blk = mc.arg(1)
             if blk:
                 self.mod_cb0 = mc.r32(blk + 0)
                 self.mod_cb1 = mc.r32(blk + 4)
-                mc.w32(blk + 8, 1)
-        mc.ret(0)
+
+                mc.w32(blk + 8, self._old_helper())
+
+            mc.ret(self._old_obj(sid))
+            return
+
+        if sid == self.OLD_FETCH:
+            self._old_fetch(mc)
+            return
+
+        obj = self._old_obj(sid)
+        frame = mc.arg(1)
+        if frame:
+            mc.w32(frame + 8, obj)
+        mc.ret(obj)
+
+    OLD_FETCH = 2001
+
+    def _old_fetch(self, mc):
+
+        desc = mc.arg(1)
+        if not desc:
+            mc.ret(0)
+            return
+        ptr, handle, ln = mc.r32(desc), mc.r32(desc + 4), mc.r32(desc + 8)
+        if ptr and ln >= 4:
+
+            mc.w32(ptr, handle)
+        mc.ret(1)
+
+    def _old_helper(self):
+
+        if getattr(self, "_old_help", None) is None:
+            self._old_help = self.mach.new_trap(
+                "oldsys_helper",
+                lambda mc: mc.ret(self._old_obj("helper")))
+        return self._old_help
+
+    OLD_MEM_SLOTS = {0x9c: "alloc", 0xa0: "free", 0x214: "memset"}
+
+    def _old_mem_table(self, name):
+
+        m = self.mach
+        addr = m.new_table(name, 256)
+
+        def alloc(mc):
+            n = mc.arg(0)
+            mc.ret(m.heap.alloc(max(4, n), "oldsdk") if n else 0)
+
+        def free(mc):
+            mc.ret(0)
+
+        def memset(mc):
+            p, v, n = mc.arg(0), mc.arg(1) & 0xFF, mc.arg(2)
+            if p and 0 < n <= 0x400000:
+                m.uc.mem_write(p, bytes([v]) * n)
+            mc.ret(p)
+
+        for off, kind in self.OLD_MEM_SLOTS.items():
+            m.w32(addr + off, m.new_trap(f"{name}.{kind}",
+                                         {"alloc": alloc, "free": free,
+                                          "memset": memset}[kind]))
+        return addr
+
+    def _old_obj(self, sid):
+
+        obj = self._old_objs.get(sid)
+        if obj is None:
+            if sid == 143:
+                obj = self._old_mem_table("oldsys#143(mem)")
+            else:
+                obj = self.mach.new_table(f"oldsys#{sid}", 256)
+            self._old_objs[sid] = obj
+        return obj
 
     def boot(self):
         m = self.mach
 
         self.style = self.entry_style()
+
+        if self.style == self.ENTRY_OLD:
+            self.game_tbl = m.new_table("GameManagerOld", 0x100, getters=True)
+            m.w32(self.host + 0x0c, self.game_tbl)
 
         tramp = m.new_trap("OldSysCall", self._old_syscall)
         m.w32(self.host + 0x00, 0xE51FF004)

@@ -1,4 +1,5 @@
 
+import array
 import struct, zlib
 
 class Framebuffer:
@@ -14,6 +15,14 @@ class Framebuffer:
         mach.uc.mem_write(self.img + 4, struct.pack(self.E + "HH", w, h) + b"\x00" * 4)
         self.frames = 0
 
+    def resize(self, w, h):
+
+        self.w, self.h = w, h
+        self.bytes = w * h * 2
+        self.mach.uc.mem_write(self.buf, b"\x00" * self.bytes)
+        self.mach.uc.mem_write(self.img + 4,
+                               struct.pack(self.E + "HH", w, h) + b"\x00" * 4)
+
     def fill_rect(self, x, y, w, h, color):
         x0, y0 = max(0, x), max(0, y)
         x1, y1 = min(self.w, x + w), min(self.h, y + h)
@@ -25,13 +34,19 @@ class Framebuffer:
 
     def raw565(self):
 
-        return bytes(self.mach.uc.mem_read(self.buf, self.bytes))
+        raw = bytes(self.mach.uc.mem_read(self.buf, self.bytes))
+        if self.mach.le:
+            return raw
+        a = array.array("H")
+        a.frombytes(raw)
+        a.byteswap()
+        return a.tobytes()
 
     def rgb888(self):
-        raw = self.raw565()
 
+        raw = self.raw565()
         lut = self._lut()
-        fmt = ("<" if self.mach.le else ">") + str(self.w * self.h) + "H"
+        fmt = "<" + str(self.w * self.h) + "H"
         return b"".join([lut[v] for v in struct.unpack(fmt, raw)])
 
     _LUT = None

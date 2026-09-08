@@ -1,0 +1,14 @@
+[package]
+name = "emucore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CoolBar 模拟器核心：ARMv5TE + 宿主 ABI"
+
+[dependencies]
+cbelib = { path = "../cbelib" }
+unicorn-engine = "2.1"
+
+capstone = "0.13"
+
+encoding_rs = "0.8"

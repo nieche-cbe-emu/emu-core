@@ -109,8 +109,7 @@ class Machine:
         self.ro_size = align_up(max(mod.image_size, len(mod.ro)))
         self.rw_size = align_up(max(mod.rw_size, len(mod.rw)) + 0x10000)
 
-        self.rw_base = (self.ro_base + align_up(len(mod.ro), 16)
-                        if mod.load_base else self.RW_BASE)
+        self.rw_base = (self.rw_place(mod) if mod.load_base else self.RW_BASE)
 
         self._map()
         self.heap = Bump(self.HEAP_BASE, self.HEAP_SIZE)
@@ -138,12 +137,22 @@ class Machine:
         self.semihost_out = bytearray()
         self.uc.hook_add(UC_HOOK_INSN_INVALID, self._on_bad_insn)
 
+    @staticmethod
+    def rw_place(mod):
+
+        end = getattr(mod, "image_end", 0) or 0
+        lo = mod.load_base
+        hi = mod.load_base + max(mod.image_size, len(mod.ro)) + 0x10000
+        if lo < end < hi:
+            return end
+        return mod.load_base + align_up(len(mod.ro), 16)
+
     def _map(self):
         u = self.uc
 
         u.mem_map(self.ro_base, self.ro_size, UC_PROT_ALL)
         u.mem_write(self.ro_base, self.mod.ro)
-        if self.rw_base == self.ro_base + align_up(len(self.mod.ro), 16)           and self.mod.load_base:
+        if self.mod.load_base:
 
             extra = align_up(self.rw_base - self.ro_base + self.rw_size) - self.ro_size
             if extra > 0:
@@ -250,6 +259,21 @@ class Machine:
         self.uc.mem_write(a, op + (value & 0xFFFFFFFF).to_bytes(4, "little" if self.le else "big"))
         self.trap_names[("native", a)] = name
         return a | 1
+
+    def read_upto(self, addr, n):
+
+        if not addr:
+            return b""
+        for lo, hi, _ in self.uc.mem_regions():
+            if lo <= addr <= hi:
+                n = min(n, hi - addr + 1)
+                break
+        while n > 0:
+            try:
+                return bytes(self.uc.mem_read(addr, n))
+            except Exception:
+                n //= 2
+        return b""
 
     def new_table(self, name, nslots, getters=False):
 

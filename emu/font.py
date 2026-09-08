@@ -6,6 +6,7 @@ MAGIC = b"CBEF"
 
 class Font:
     def __init__(self, path):
+        self._mcache = {}
         d = open(path, "rb").read()
         if d[:4] != MAGIC:
             raise ValueError(f"{path} 不是点阵字库文件")
@@ -59,7 +60,14 @@ class Font:
                 i += 1
 
     def measure(self, gb_bytes):
-        return sum(w for _, _, w in self.iter_glyphs(gb_bytes))
+
+        w = self._mcache.get(gb_bytes)
+        if w is None:
+            w = sum(x for _, _, x in self.iter_glyphs(gb_bytes))
+            if len(self._mcache) > 4096:
+                self._mcache.clear()
+            self._mcache[gb_bytes] = w
+        return w
 
     def draw(self, mach, buf, stride, sw, sh, gb_bytes, x, y, color):
 

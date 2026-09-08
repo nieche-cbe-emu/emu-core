@@ -377,7 +377,14 @@ def file_seek(mc, rt):
         mc.ret(-1 & 0xFFFFFFFF); return
     if off & 0x80000000:
         off -= 1 << 32
-    f.seek(off, whence)
+
+    if whence not in (0, 1, 2):
+        whence = 0
+    try:
+        f.seek(off, whence)
+    except OSError:
+        base = {0: 0, 1: f.tell(), 2: os.fstat(f.fileno()).st_size}.get(whence, 0)
+        f.seek(max(0, base + off) if whence else max(0, off))
     mc.ret(f.tell())
 
 @impl(IO, "Vm_file_tell")
@@ -441,6 +448,15 @@ def is_inner(mc, rt):
 
 @impl(SYS, "VmGetPlatformType")
 def platform(mc, rt):
+    mc.ret(0)
+
+@impl("VmScreenManagerTag", "vmScreenLoadResource")
+def screen_load_res(mc, rt):
+
+    scr = mc.arg(0)
+    if scr:
+
+        rt.defer(mc.r32(scr + 4 * rt.S_LOADRES), (scr,), "loadRes")
     mc.ret(0)
 
 @impl("VmUcs2StrManagerTag", "VmutExpandStrcpy")
@@ -675,6 +691,32 @@ def ucs2_strcmp(mc, rt):
     a, b = wstr(mc, mc.arg(0), 4096), wstr(mc, mc.arg(1), 4096)
     mc.ret(0 if a == b else 1)
 
+def _ucs2_bytes(mc, addr):
+
+    return wstr(mc, addr, 4096).encode("gb18030", "replace")
+
+@impl(LCD, "vMDrawUcs2String", "VMDrawUcs2String", "vMShowUcs2String")
+def draw_ucs2(mc, rt):
+
+    _draw_text(rt, mc, _ucs2_bytes(mc, mc.arg(0)), mc.arg(1), mc.arg(2), mc.arg(3))
+    mc.ret(0)
+
+@impl(LCD, "vMGetUcs2StringWidth", "VMGetUcs2StringWidth")
+def ucs2_width(mc, rt):
+    mc.ret(_text_width(rt, _ucs2_bytes(mc, mc.arg(0))))
+
+@impl(LCD, "vMDrawUcs2StringRect", "vMDrawUcs2StringRectEx")
+def draw_ucs2_rect(mc, rt):
+
+    return draw_string_rect(mc, rt, _text=_ucs2_bytes(mc, mc.arg(0)))
+
+@impl(UCS, "vmutStrncmpUcs2", "VmutStrncmpUcs2")
+def ucs2_strncmp(mc, rt):
+    n = mc.arg(2)
+    a = wstr(mc, mc.arg(0), 4096)[:n]
+    b = wstr(mc, mc.arg(1), 4096)[:n]
+    mc.ret(0 if a == b else (1 if a > b else -1) & 0xFFFFFFFF)
+
 @impl(LCD, "VMGB2UCS2")
 def gb2ucs2(mc, rt):
 
@@ -692,11 +734,10 @@ def ucs2gb(mc, rt):
     mc.uc.mem_write(mc.arg(1), s + b"\x00")
     mc.ret(len(s))
 
-@impl(LCD, "VMDrawStringRect", "vMShowStringRect", "vMDrawUcs2StringRect",
-      "vMDrawUcs2StringRectEx")
-def draw_string_rect(mc, rt):
+@impl(LCD, "VMDrawStringRect", "vMShowStringRect")
+def draw_string_rect(mc, rt, _text=None):
 
-    s = mc.cstr(mc.arg(0)) or b""
+    s = _text if _text is not None else (mc.cstr(mc.arg(0)) or b"")
     x, y, w, h, color = (mc.arg(i) for i in range(1, 6))
 
     lh = (rt.font.hh + 2) if rt.font else 14
@@ -831,6 +872,9 @@ def _materialize(mc, rt, pkg, arch):
         mc.w32(offs_tbl + n * 4, cur)
         total = cur
         rt.state[key] = (names_tbl, offs_tbl, data_p, n, total)
+        if os.environ.get("DPDBG"):
+            import sys as _s
+            print(f"MAT\t{key}\t{n}\t{data_p:#x}", file=_s.stderr)
     mc.uc.mem_write(pkg + DP["fileNum"], (n & 0xFFFF).to_bytes(2, "little"))
     mc.w32(pkg + DP["fileNameTable"], names_tbl)
     mc.w32(pkg + DP["fileOffsetTable"], offs_tbl)
@@ -963,8 +1007,13 @@ def df_set_pkg(mc, rt):
     mc.ret(0)
 
 @impl(GAME, "DF_GetDataPackage")
+@impl("VmDlResourceManagerTag", "vmGetDataPackage")
 def df_get_pkg(mc, rt):
-    mc.ret(rt.state.get("datapackage", 0))
+
+    pkg = rt.state.get("datapackage")
+    if not pkg:
+        pkg = rt.state["datapackage"] = mc.new_table("DF_DataPackage(auto)", 96)
+    mc.ret(pkg)
 
 @impl(SYS, "VMGetOperator")
 def get_operator(mc, rt):
@@ -982,7 +1031,7 @@ def img_from_stream(mc, rt):
     stream, out = mc.arg(0), mc.arg(1)
     if stream in rt.images.by_stream and not out:
         mc.ret(rt.images.by_stream[stream]); return
-    raw = bytes(mc.uc.mem_read(stream, min(0x80000, 0x80000)))
+    raw = mc.read_upto(stream, 0x80000)
     try:
         img = _decode_img(raw)
     except Exception as e:
@@ -996,7 +1045,26 @@ def img_from_stream(mc, rt):
 
 @impl(GAME, "IMG_CreateImageFormRes")
 def img_from_res(mc, rt):
+
+    p = mc.arg(0)
+    raw = mc.read_upto(p, 64)
+    nul = raw.find(b"\x00")
+    if 0 < nul <= 48:
+        i = _res_index(rt, raw[:nul].decode("latin1"))
+        if i >= 0:
+            q = _res_ptr(mc, rt, i)
+            if q:
+                mc.setreg(0, q)
+                mc.setreg(1, 0)
+                img_from_stream(mc, rt)
+                return
     mc.setreg(1, mc.arg(1))
+    img_from_stream(mc, rt)
+
+@impl("VmGameLcdManagerTag", "CreateImage")
+def create_image(mc, rt):
+
+    mc.setreg(1, 0)
     img_from_stream(mc, rt)
 
 def _blit8(mc, rt, alpha):
@@ -1098,6 +1166,13 @@ def df_res_by_name(mc, rt):
     name = (mc.cstr(mc.arg(0)) or b"").decode("latin1")
     i = _res_index(rt, name)
     p = _res_ptr(mc, rt, i)
+    if os.environ.get("RESDBG"):
+        import sys as _s
+        pkg = rt.state.get("datapackage", 0)
+        data = mc.r32(pkg + DP["fileData"]) if pkg else 0
+        offs = mc.r32(pkg + DP["fileOffsetTable"]) if pkg else 0
+        print(f"RES\t{name}\tidx={i}\tpkg={pkg:#x}\tdata={data:#x}\toffs={offs:#x}"
+              f"\tn={len(_entries(rt))}\t-> {p:#x}", file=_s.stderr)
     if not p:
         rt.trace_io(f"DF_GetResource: 未找到 {name!r}")
     mc.ret(p)
@@ -1623,9 +1698,56 @@ def draw_rect(mc, rt):
     rt.fill_rect(l, t, 1, h, color); rt.fill_rect(rr, t, 1, h, color)
     mc.ret(1)
 
+def _find_matches(rt, dev, path, pattern):
+
+    import fnmatch
+    root = rt.vfs.resolve(dev, path or "")
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    pat = (pattern or "*").strip() or "*"
+    return [n for n in names if fnmatch.fnmatch(n.lower(), pat.lower())]
+
+@impl(IO, "Vm_find_first")
+def find_first(mc, rt):
+
+    dev, path, pattern, out = mc.arg(0), wstr(mc, mc.arg(1)), wstr(mc, mc.arg(2)), mc.arg(3)
+    names = _find_matches(rt, dev, path, pattern)
+    if not names:
+        mc.ret(-1 & 0xFFFFFFFF)
+        return
+    h = rt.next_find
+    rt.next_find += 1
+    rt.finds[h] = names
+    if out:
+        wwrite(mc, out, names.pop(0))
+    rt.trace_io(f"find_first(dev={dev}, {path!r}, {pattern!r}) -> 句柄 {h}, 共 {len(names)+1} 项")
+    mc.ret(h)
+
+@impl(IO, "Vm_find_next")
+def find_next(mc, rt):
+
+    h, out = mc.arg(1), mc.arg(3)
+    names = rt.finds.get(h)
+    if not names:
+        mc.ret(-1 & 0xFFFFFFFF)
+        return
+    if out:
+        wwrite(mc, out, names.pop(0))
+    else:
+        names.pop(0)
+    mc.ret(0)
+
+@impl(IO, "Vm_find_close")
+def find_close(mc, rt):
+    rt.finds.pop(mc.arg(0), None)
+    mc.ret(0)
+
 @impl(IO, "Vm_get_sdcardStatus", "Vm_get_sdcardStatusEx")
 def sdcard(mc, rt):
-    mc.ret(0)
+
+    mc.ret(1)
 
 @impl(SYS, "VMGetPrjVersion")
 def prj_version(mc, rt):

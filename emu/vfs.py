@@ -27,6 +27,7 @@ class Vfs:
         os.makedirs(self.root, exist_ok=True)
         self.handles = {}
         self.next_h = 1
+        self.glue_synthesized = []
 
     @staticmethod
     def _norm(path):
@@ -52,6 +53,14 @@ class Vfs:
 
     OPEN_FAIL = -1
 
+    GLUE_PREFIXES = ("dfwsms", "dfwmix", "wpay", "cdlist", "cwstorecfg",
+                     "wstore_host", "coolbar_list")
+
+    @classmethod
+    def is_glue_file(cls, path):
+        base = cls._norm(path).split("/")[-1].lower()
+        return base.startswith(cls.GLUE_PREFIXES)
+
     def open(self, dev, path, mode):
 
         m0 = (mode or "r").lower()
@@ -63,12 +72,18 @@ class Vfs:
         if not path or path.endswith(("\\", "/")):
             return self.OPEN_FAIL
         if not os.path.exists(hp):
-            if not create:
+            if not create and self.is_glue_file(path):
+
+                os.makedirs(os.path.dirname(hp), exist_ok=True)
+                open(hp, "wb").close()
+                self.glue_synthesized.append(self._norm(path))
+            elif not create:
                 return self.OPEN_FAIL
             os.makedirs(os.path.dirname(hp), exist_ok=True)
             open(hp, "wb").close()
         try:
             if "w" in m:
+
                 f = open(hp, "w+b")
             elif "a" in m:
                 f = open(hp, "a+b")

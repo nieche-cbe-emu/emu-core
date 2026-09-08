@@ -45,10 +45,16 @@ def _parse_res(buf: bytes, base: int, size: int, variant: bool = False) -> Optio
         index_size, data_size, count, zero = struct.unpack_from("<4I", buf, base)
         hdr, isz_at = 0x10, 0x00
     else:
-        magic, n_alt, flag, index_size, data_size, count, zero =            struct.unpack_from("<7I", buf, base)
-        if magic != 8:
+        magic = struct.unpack_from("<I", buf, base)[0]
+        if magic == 8:
+            magic, n_alt, flag, index_size, data_size, count, zero =                struct.unpack_from("<7I", buf, base)
+            hdr, isz_at = 0x1C, 0x0C
+        elif magic == 4:
+
+            magic, n_alt, index_size, data_size, count, zero =                struct.unpack_from("<6I", buf, base)
+            hdr, isz_at = 0x18, 0x08
+        else:
             return None
-        hdr, isz_at = 0x1C, 0x0C
     if count == 0 or count > 0x10000:
         return None
     data_off = isz_at + 4 + index_size

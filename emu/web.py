@@ -60,8 +60,6 @@ cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);touch(e,
 cv.addEventListener('pointermove',e=>{if(e.buttons)touch(e,'move')});
 cv.addEventListener('pointerup',e=>touch(e,'up'));
 
-// 服务端直传 RGB565 原始帧缓冲，转换放在这里做——
-// 在 Python 里逐像素转 RGB888 要 47ms/帧，是整条链路唯一的瓶颈。
 const SW=%(sw)d, SH=%(sh)d, ROT=%(rot)d;
 const imgd=cx.createImageData(cv.width,cv.height);
 function draw(u16){
