@@ -20,6 +20,8 @@ def _candidates():
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
     dirs = [
+
+        getattr(sys, "_MEIPASS", ""),
         here,
         root,
         os.path.join(root, "lib"),
